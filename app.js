@@ -88,7 +88,7 @@ joinRoomBtn.addEventListener('click',() => beginMatch('join',roomCodeInput.value
 function signalingURL() {
   const override=localStorage.getItem('rts-signaling-url');
   if (override) return override;
-  return `${location.protocol==='https:' ? 'wss:' : 'ws:'}//${location.host}`;
+  return `${location.protocol==='https:' ? 'wss:' : 'ws:'}//${location.host}/api/matchmaking`;
 }
 
 function beginMatch(mode,roomCode='') {

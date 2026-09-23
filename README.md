@@ -64,7 +64,13 @@ Then open:
 
     http://localhost:8000
 
-Choose a player name, then select **Quick match**, create a room and share its code, or join with a room code. For a LAN match, the host runs the server and the other player opens the host machine's LAN address on port 8000. For matches over the internet, deploy this Node server to a host that supports persistent WebSocket connections and HTTPS; the browser automatically switches signaling to secure WebSockets on HTTPS sites. A TURN relay is needed for some restrictive networks.
+Choose a player name, then select **Quick match**, create a room and share its code, or join with a room code. For a LAN match, the host runs the server and the other player opens the host machine's LAN address on port 8000. Some restrictive networks also require a TURN relay for WebRTC.
+
+## Deploy to Vercel
+
+This repository includes `vercel.json`, which builds the static game into `public/` and exposes the matchmaking endpoint at `/api/matchmaking`. Import the GitHub repository into Vercel and deploy with the default project root; no environment variables are needed for the prototype. The browser selects secure WebSockets automatically on HTTPS.
+
+Vercel's WebSocket Functions are currently in beta and require Fluid Compute. The lobby currently keeps room membership in function memory, while Vercel does not guarantee that separate connections reach the same function instance. This is suitable for a preview or low-traffic prototype, but reliable matchmaking across instances/deployments needs shared Redis-backed room and signaling state. See [Vercel's WebSocket documentation](https://vercel.com/docs/functions/websockets) for the platform limits.
 
 The name is a local profile saved in that browser; it is not a password-protected account. WebRTC sends player positions directly between peers after the server pairs them. Building, recruiting, rally points, and demolition are shared actions. Autonomous worker, wildlife, and enemy simulation continues independently on each client, so this is a multiplayer prototype rather than an authoritative shared-world server.
 
