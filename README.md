@@ -68,7 +68,7 @@ Choose a player name, then select **Quick match**, create a room and share its c
 
 The name is a local profile saved in that browser; it is not a password-protected account. WebRTC sends player positions directly between peers after the server pairs them. Building, recruiting, rally points, and demolition are shared actions. Autonomous worker, wildlife, and enemy simulation continues independently on each client, so this is a multiplayer prototype rather than an authoritative shared-world server.
 
-Internet access is required only to load Three.js from jsDelivr.
+The browser loads Three.js from jsDelivr; `npm install` downloads the signaling server's WebSocket dependency.
 
 ## Notes
 

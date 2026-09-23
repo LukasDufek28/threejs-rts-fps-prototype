@@ -50,7 +50,7 @@ let enemiesEnabled = true;
 let enemySpawnTimer = 0;
 const multiplayer = {
   socket:null, peer:null, channel:null, roomCode:'', peerId:'', isHost:false,
-  name:'', remote:null, iceQueue:[], actionQueue:[], lastPositionSent:0
+  name:'', remote:null, iceQueue:[], actionQueue:[], lastPositionSent:0, status:'Offline'
 };
 
 playerNameInput.value=localStorage.getItem('rts-player-name') || '';
@@ -68,12 +68,14 @@ function currentPlayerName() {
 }
 
 function setOnlineStatus(message) {
+  multiplayer.status=message;
   onlineStatus.textContent=message;
   if (uiMode==='game') toast(message);
 }
 
 function beginSolo() {
   if (!currentPlayerName()) return;
+  closeMultiplayer();
   uiMode='game';
   controls.lock();
 }
@@ -252,12 +254,13 @@ function closeMultiplayer() {
   multiplayer.channel=null; multiplayer.peer=null; multiplayer.socket=null;
   multiplayer.peerId=''; multiplayer.roomCode=''; multiplayer.isHost=false;
   multiplayer.actionQueue=[];
+  multiplayer.status='Offline';
 }
 
 function sendPeerAction(action) {
   const packet={type:'action',action};
   if (multiplayer.channel?.readyState==='open') multiplayer.channel.send(JSON.stringify(packet));
-  else if (multiplayer.peer) multiplayer.actionQueue.push(packet);
+  else if (multiplayer.socket) multiplayer.actionQueue.push(packet);
 }
 
 function findBuildingAt(type,x,z) {
@@ -2176,6 +2179,7 @@ function updateHUD() {
     archer:npcs.filter(n=>n.userData.kind==='archer').length
   };
   statsEl.innerHTML = `
+    ${multiplayer.roomCode ? `<b>Online:</b> ${multiplayer.roomCode} · ${multiplayer.status}<br>` : ''}
     <b>Enemies:</b> ${enemiesEnabled ? 'on' : 'off'}<br>
     <b>Build:</b> ${selectedBuild ?? 'none'}<br>
     <span style="color:#bbb">E Buildings · Tab Stores</span>
