@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>FPS RTS Prototype</title>
+  <title>Crusader Royale</title>
   <style>
     html, body { margin:0; height:100%; overflow:hidden; background:#111; font-family:Arial,sans-serif; color:white; }
     canvas { display:block; }
@@ -28,7 +28,7 @@
     #minimapLegend span:nth-child(2) { color:#e2c889; }
     #minimapLegend span:nth-child(3) { color:#67dcff; }
     #minimapLegend span:nth-child(4) { color:#ff7777; }
-    #inventory { position:absolute; bottom:62px; left:14px; width:270px; padding:12px 14px; background:rgba(35,31,24,.94); border:2px solid #a1865b; box-shadow:0 5px 18px rgba(0,0,0,.45); border-radius:5px; pointer-events:none; font-size:13px; }
+    #inventory { position:absolute; bottom:62px; left:14px; width:305px; max-height:70vh; overflow:auto; padding:12px 14px; background:rgba(35,31,24,.96); border:2px solid #a1865b; box-shadow:0 5px 18px rgba(0,0,0,.45); border-radius:5px; pointer-events:auto; font-size:13px; }
     #inventory[hidden] { display:none; }
     #inventory h2 { margin:0 0 9px; color:#f3dc9d; font-size:17px; }
     #inventory h3 { margin:10px 0 5px; padding-top:6px; border-top:1px solid #76684c; color:#d8c49c; font-size:12px; text-transform:uppercase; letter-spacing:.08em; }
@@ -41,7 +41,27 @@
     #buildMenu { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); width:min(480px,calc(100vw - 40px)); padding:18px; background:#1b2521; border:1px solid #647469; border-radius:12px; pointer-events:auto; }
     #buildMenu[hidden] { display:none; }
     #buildMenu h2 { margin:0 0 10px; }
-    #buildOptions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+    #buildOptions { display:grid; gap:8px; }
+    .buildTabs { display:flex; flex-wrap:wrap; gap:5px; }
+    .buildTabs button { padding:6px 8px; font-size:11px; }
+    .buildTabs .active { background:#f0d588; }
+    .buildList { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; max-height:45vh; overflow:auto; }
+    .buildList button { font-size:12px; }
+    #buildTooltip { min-height:72px; padding:10px 12px; border:1px solid #697967; border-radius:7px; background:#27372c; font-size:13px; line-height:1.4; }
+    #buildTooltip strong { color:#f0d588; }
+    .settingRow { display:flex; gap:5px; align-items:center; justify-content:space-between; margin:5px 0; }
+    .settingRow button, .tradeRow button { padding:3px 7px; font-size:11px; }
+    .tradeRow { display:flex; gap:4px; align-items:center; justify-content:space-between; margin:3px 0; }
+    #commandMenu { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:240px; height:240px; border-radius:50%; background:rgba(23,34,28,.94); border:2px solid #d0b26b; pointer-events:auto; }
+    #commandMenu[hidden] { display:none; }
+    #commandMenu button { position:absolute; width:84px; padding:7px 3px; font-size:11px; transform:translate(-50%,-50%); }
+    #commandMenu button:nth-child(1) { left:50%; top:13%; }
+    #commandMenu button:nth-child(2) { left:80%; top:28%; }
+    #commandMenu button:nth-child(3) { left:84%; top:61%; }
+    #commandMenu button:nth-child(4) { left:64%; top:85%; }
+    #commandMenu button:nth-child(5) { left:35%; top:85%; }
+    #commandMenu button:nth-child(6) { left:15%; top:61%; }
+    #commandMenu button:nth-child(7) { left:20%; top:28%; }
     #buildOptions button { text-align:left; }
     #help { position:absolute; bottom:14px; left:50%; transform:translateX(-50%); padding:10px 14px; background:rgba(0,0,0,.65); border:1px solid rgba(255,255,255,.18); border-radius:8px; font-size:13px; text-align:center; max-width:calc(100vw - 40px); }
     #crosshair { position:absolute; left:50%; top:50%; width:14px; height:14px; transform:translate(-50%,-50%); }
@@ -56,9 +76,11 @@
     button { border:0; padding:9px 12px; border-radius:7px; font-size:14px; cursor:pointer; background:#d7e7d1; color:#172119; }
     button:hover { background:#fff; }
     #playBtn { padding:12px 20px; font-size:16px; }
+    #resumeBtn { width:100%; margin:12px 0 2px; background:#f0d588; font-weight:bold; }
+    #resumeBtn[hidden] { display:none; }
     #start .card { text-align:left; }
     #start .card h1, #start .card > p { text-align:center; }
-    #playerName, #roomCode { box-sizing:border-box; width:100%; padding:11px 12px; border:1px solid #718176; border-radius:7px; background:#101713; color:white; font-size:15px; }
+    #playerName, #roomCode, #balancePreset { box-sizing:border-box; width:100%; padding:11px 12px; border:1px solid #718176; border-radius:7px; background:#101713; color:white; font-size:15px; margin-bottom:8px; }
     .lobbyActions { display:grid; grid-template-columns:1fr 1fr; gap:9px; margin:12px 0; }
     .lobbyActions button { min-height:42px; }
     #enterMatchBtn { width:100%; margin:2px 0 10px; background:#f0d588; font-weight:bold; }
@@ -75,10 +97,13 @@
 <body>
   <div id="start">
     <div class="card">
-      <h1>FPS RTS Prototype</h1>
-      <p>Build a settlement and command its troops.</p>
+      <h1>Crusader Royale</h1>
+      <p>Build a working settlement and lead its army as the lord.</p>
+      <button id="resumeBtn" hidden>Resume Game</button>
       <label for="playerName">Player name</label>
       <input id="playerName" maxlength="20" autocomplete="nickname" placeholder="Choose a player name">
+      <label for="balancePreset">Solo balance</label>
+      <select id="balancePreset"><option value="BATTLE_ROYALE">Battle Royale</option><option value="CRUSADER_STANDARD">Crusader Standard</option></select>
       <div class="lobbyActions">
         <button id="playBtn">Sandbox</button>
         <button id="quickMatchBtn">Quick match</button>
@@ -100,7 +125,7 @@
       <div class="vitalLabel"><span>Health</span><span id="healthValue">100 / 100</span></div><div class="vitalTrack"><div class="vitalFill" id="healthFill"></div></div>
       <div class="vitalLabel"><span>Stamina</span><span id="staminaValue">100 / 100</span></div><div class="vitalTrack"><div class="vitalFill" id="staminaFill"></div></div>
     </div>
-    <div id="basePrompt" hidden>Choose your base location near your starting border.<br>Turn toward clear ground and left click to place it. Stores are added beside it.</div>
+    <div id="basePrompt" hidden>Look at clear ground and click to place your base. Stores are added beside it.</div>
     <div id="inventory" hidden aria-label="Settlement inventory">
       <h2>Stores</h2>
       <div id="inventoryContents"></div>
@@ -118,11 +143,15 @@
     <div id="buildMenu" hidden>
       <h2>Buildings</h2>
       <div id="buildOptions"></div>
-      <p class="muted">1 Lumber Camp · 2 Hunting Lodge · 3 Barracks · 4 Stockpile · 5 Quarry · 6 Granary · E close<br>Quarries must be placed on gray stone deposits.</p>
+      <div id="buildTooltip" role="status" aria-live="polite">Point at a building to see what it does and where to place it.</div>
+      <p class="muted">Choose a category, then a building. E closes.</p>
+    </div>
+    <div id="commandMenu" hidden aria-label="Troop commands">
+      <button data-command="move">Move</button><button data-command="attack">Attack</button><button data-command="attackMove">Attack Move</button><button data-command="hold">Hold</button><button data-command="guard">Guard Here</button><button data-command="follow">Follow Me</button><button data-command="retreat">Retreat</button>
     </div>
     <div id="toast"></div>
     <div id="crosshair"></div>
-    <div id="help">WASD Move · Shift Sprint · Space Jump · E Buildings (1–6) · Tab Stores · X Dismantle · R/T Recruit · Q Rally</div>
+    <div id="help">WASD Move · Shift Sprint · Space Jump · E Buildings · Tab Stores · G All Troops · 1–7 Recruit · Q Tap / Hold Commands</div>
   </div>
   <script type="importmap">
   { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/" } }

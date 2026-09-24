@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
+import {WORLD_RADIUS} from './config/balance.js';
+import {startingBaseInSector} from './simulation/BaseSectors.js';
 
 const MAX_PLAYERS = 3;
 
@@ -30,7 +32,7 @@ export function attachMatchmaking(wss) {
   function announce(room) {
     const roster=room.players.map((socket,index) => {
       const angle=room.angle+index*2*Math.PI/room.players.length;
-      return { id:socket.id, slot:index, spawn:{ x:Math.round(Math.cos(angle)*105), z:Math.round(Math.sin(angle)*105) } };
+      return { id:socket.id, slot:index, sectorAngle:angle, sectorCount:room.players.length, spawn:{ x:Math.round(Math.cos(angle)*305), z:Math.round(Math.sin(angle)*305) } };
     });
     for (const [index,socket] of room.players.entries()) {
       send(socket,{
@@ -79,9 +81,17 @@ export function attachMatchmaking(wss) {
       }
       if (message.type==='game') {
         const room=rooms.get(socket.roomCode);
-        if (!room || !room.players.includes(socket) || !['position','units','action'].includes(message.packet?.type)) return;
+        if (!room || !room.players.includes(socket) || !['position','units','wildlife','action','rtc'].includes(message.packet?.type)) return;
+        if(message.packet.type==='action' && message.packet.action?.kind==='base') {
+          const {x,z,storage}=message.packet.action;
+          const slot=room.players.indexOf(socket),angle=room.angle+slot*2*Math.PI/room.players.length;
+          if(!Number.isFinite(x)||!Number.isFinite(z)||Math.hypot(x,z)>WORLD_RADIUS-4 || !startingBaseInSector(x,z,storage,angle,room.players.length)) {
+            send(socket,{type:'error',message:'Your base and starter stores must be inside your map sector.'});
+            return;
+          }
+        }
         if (message.packet.type==='action' && ['base','ready'].includes(message.packet.action?.kind)) room.started=true;
-        for (const peer of room.players) if (peer!==socket) send(peer,{type:'game',from:socket.id,packet:message.packet});
+        for (const peer of room.players) if (peer!==socket && (!message.packet.to||message.packet.to===peer.id)) send(peer,{type:'game',from:socket.id,packet:message.packet});
       }
     });
 
@@ -90,6 +100,7 @@ export function attachMatchmaking(wss) {
       if (!room) return;
       room.players.splice(room.players.indexOf(socket),1);
       for (const peer of room.players) send(peer,{type:'peer-left',playerId:socket.id});
+      if(!room.started && room.players.length>=2)announce(room);
       if (!room.players.length) rooms.delete(room.code);
     });
   });

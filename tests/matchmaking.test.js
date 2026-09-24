@@ -51,6 +51,10 @@ for (const mode of ['quick', 'private']) {
       assert.deepEqual(host.spawn,guest.peerSpawn);
       assert.deepEqual(guest.spawn,host.peerSpawn);
       assert.ok(Math.hypot(host.spawn.x-guest.spawn.x,host.spawn.z-guest.spawn.z)>100);
+      assert.equal(host.players.length,2);
+      assert.equal(host.players[0].sectorCount,2);
+      assert.equal(guest.players[1].sectorCount,2);
+      assert.ok(Math.abs(Math.cos(host.players[0].sectorAngle-guest.players[1].sectorAngle)+1)<1e-9);
 
       const position={type:'position',name:'Player one',x:4,z:8,yaw:1};
       const guestPacket=nextMessage(second,'game');
@@ -71,6 +75,20 @@ for (const mode of ['quick', 'private']) {
       const resultPacket=nextMessage(first,'game');
       second.send(JSON.stringify({type:'game',packet:defeat}));
       assert.deepEqual((await resultPacket).packet,defeat);
+
+      const signal={type:'rtc',to:guest.playerId,signal:{description:{type:'offer',sdp:'test'}}};
+      const signalPacket=nextMessage(second,'game');
+      first.send(JSON.stringify({type:'game',packet:signal}));
+      assert.deepEqual((await signalPacket).packet,signal);
+
+      const rejectedBase=nextMessage(first,'error');
+      first.send(JSON.stringify({type:'game',packet:{type:'action',action:{kind:'base',x:guest.spawn.x,z:guest.spawn.z,storage:{stockpile:{x:guest.spawn.x+8,z:guest.spawn.z},granary:{x:guest.spawn.x-8,z:guest.spawn.z}}}}}));
+      assert.match((await rejectedBase).message,/inside your map sector/);
+
+      const validBase={type:'action',action:{kind:'base',x:host.spawn.x,z:host.spawn.z,storage:{stockpile:{x:host.spawn.x+8,z:host.spawn.z},granary:{x:host.spawn.x-8,z:host.spawn.z}}}};
+      const basePacket=nextMessage(second,'game');
+      first.send(JSON.stringify({type:'game',packet:validBase}));
+      assert.deepEqual((await basePacket).packet,validBase);
     } finally {
       first.terminate();
       second.terminate();
@@ -100,6 +118,7 @@ test('three players spawn one third of the arena apart and receive the same comb
     const matched=await Promise.all(rosterMessages);
     for (const message of matched) {
       assert.equal(message.players.length,3);
+      assert.equal(message.players.find(player=>player.id===message.playerId).sectorCount,3);
       assert.deepEqual(message.spawn,message.players.find(player => player.id===message.playerId).spawn);
     }
     const positions=matched.map(message => message.spawn);
@@ -113,6 +132,9 @@ test('three players spawn one third of the arena apart and receive the same comb
       assert.deepEqual(received.packet,packet);
       assert.equal(received.from,matched[0].playerId);
     }
+    const updatedRoster=[nextMessage(players[0],'matched'),nextMessage(players[1],'matched')];
+    players[2].close();
+    for (const message of await Promise.all(updatedRoster)) assert.equal(message.players.length,2);
   } finally {
     players.forEach(socket => socket.terminate());
     await new Promise(resolve => wss.close(resolve));
