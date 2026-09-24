@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+import { playSound } from './audio.js';
 
 // Keep generated terrain and resource deposits aligned between connected peers.
 let worldRandomState=0x5eed1234;
@@ -17,6 +18,52 @@ scene.fog = new THREE.Fog(0x87b7d8, 95, 280);
 
 const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 330);
 camera.position.set(0, 2.0, 0);
+scene.add(camera);
+const viewScene=new THREE.Scene();
+viewScene.add(new THREE.HemisphereLight(0xe9f6ff,0x6b4228,2.5));
+const viewCamera=new THREE.PerspectiveCamera(65,innerWidth/innerHeight,.01,10);
+viewScene.add(viewCamera);
+const royalHand=new THREE.Group();
+royalHand.position.set(.72,-.62,-1.28);
+royalHand.rotation.z=-.35;
+royalHand.scale.setScalar(.65);
+const blueSteel=new THREE.MeshStandardMaterial({color:0xc4d4dc,metalness:.8,roughness:.23});
+const edgeSteel=new THREE.MeshStandardMaterial({color:0xf2f6ef,metalness:.76,roughness:.15});
+const goldTrim=new THREE.MeshStandardMaterial({color:0xd6aa4d,metalness:.65,roughness:.27});
+const gripMat=new THREE.MeshStandardMaterial({color:0x3b241d,roughness:.88});
+const sleeve=new THREE.Mesh(new THREE.CylinderGeometry(.17,.24,.6,8),new THREE.MeshStandardMaterial({color:0x315b88,roughness:.85}));
+sleeve.position.set(.17,-.3,.1);
+sleeve.rotation.z=.35;
+const glove=new THREE.Mesh(new THREE.BoxGeometry(.22,.2,.25),new THREE.MeshStandardMaterial({color:0x5b3726,roughness:.8}));
+glove.position.set(.02,-.06,-.03);
+const hilt=new THREE.Mesh(new THREE.CylinderGeometry(.046,.05,.38,8),gripMat);
+hilt.position.y=.04;
+const pommel=new THREE.Mesh(new THREE.SphereGeometry(.095,10,8),goldTrim);
+pommel.position.y=-.19;
+const guard=new THREE.Mesh(new THREE.BoxGeometry(.5,.075,.12),goldTrim);
+guard.position.y=.27;
+const guardEnds=[];
+for (const side of [-1,1]) {
+  const end=new THREE.Mesh(new THREE.SphereGeometry(.067,8,6),goldTrim);
+  end.position.set(side*.26,.28,0);
+  guardEnds.push(end);
+}
+const bladeShape=new THREE.Shape();
+bladeShape.moveTo(-.105,.31);
+bladeShape.lineTo(.105,.31);
+bladeShape.lineTo(.085,1.07);
+bladeShape.lineTo(0,1.27);
+bladeShape.lineTo(-.085,1.07);
+bladeShape.closePath();
+const blade=new THREE.Mesh(new THREE.ExtrudeGeometry(bladeShape,{depth:.055,bevelEnabled:true,bevelThickness:.012,bevelSize:.01,bevelSegments:1}),blueSteel);
+blade.position.z=-.03;
+const fuller=new THREE.Mesh(new THREE.BoxGeometry(.023,.52,.007),edgeSteel);
+fuller.position.set(0,.69,.045);
+const jewel=new THREE.Mesh(new THREE.OctahedronGeometry(.065),new THREE.MeshStandardMaterial({color:0xa8232b,metalness:.25,roughness:.2}));
+jewel.position.set(0,.26,.08);
+royalHand.add(sleeve,glove,hilt,pommel,guard,...guardEnds,blade,fuller,jewel);
+viewCamera.add(royalHand);
+let swordSwingTime=0;
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(innerWidth, innerHeight);
@@ -26,6 +73,7 @@ document.body.appendChild(renderer.domElement);
 
 const controls = new PointerLockControls(camera, document.body);
 const playBtn = document.querySelector('#playBtn');
+const enterMatchBtn = document.querySelector('#enterMatchBtn');
 const quickMatchBtn = document.querySelector('#quickMatchBtn');
 const createRoomBtn = document.querySelector('#createRoomBtn');
 const joinRoomBtn = document.querySelector('#joinRoomBtn');
@@ -33,7 +81,10 @@ const playerNameInput = document.querySelector('#playerName');
 const roomCodeInput = document.querySelector('#roomCode');
 const onlineStatus = document.querySelector('#onlineStatus');
 const startEl = document.querySelector('#start');
-const enemyToggle = document.querySelector('#enemySpawning');
+const outcomeEl = document.querySelector('#outcome');
+const outcomeTitle = document.querySelector('#outcomeTitle');
+const outcomePlace = document.querySelector('#outcomePlace');
+document.querySelector('#outcomeMenu').addEventListener('click',() => location.reload());
 const detailsEl = document.querySelector('#details');
 const detailTitle = document.querySelector('#detailTitle');
 const detailBody = document.querySelector('#detailBody');
@@ -44,14 +95,46 @@ const inventoryEl = document.querySelector('#inventory');
 const inventoryContents = document.querySelector('#inventoryContents');
 const minimapCanvas = document.querySelector('#minimapCanvas');
 const minimapContext = minimapCanvas.getContext('2d');
+const healthFill = document.querySelector('#healthFill');
+const healthValue = document.querySelector('#healthValue');
+const staminaFill = document.querySelector('#staminaFill');
+const staminaValue = document.querySelector('#staminaValue');
+const basePrompt = document.querySelector('#basePrompt');
 let uiMode = 'main';
+let fallbackLook = false;
+const canPlay = () => controls.isLocked || (fallbackLook && uiMode==='game');
 let selectedObject = null;
-let enemiesEnabled = true;
-let enemySpawnTimer = 0;
+let playerHealth = 100;
+let playerStamina = 100;
+let sprintExhausted = false;
+let basePlaced = false;
+let baseSpawn = new THREE.Vector3();
+let matchEnded = false;
+let playerReady = false;
+let lastSwordAttack = 0;
 const multiplayer = {
-  socket:null, peer:null, channel:null, roomCode:'', peerId:'', isHost:false,
-  name:'', remote:null, iceQueue:[], actionQueue:[], lastPositionSent:0, status:'Offline'
+  socket:null, roomCode:'', playerId:'', peers:new Map(), name:'', isHost:false,
+  lastPositionSent:0, lastUnitsSent:0, status:'Offline'
 };
+
+function activePeers() { return [...multiplayer.peers.values()].filter(peer => peer.alive); }
+function combatReady() { return basePlaced && playerReady && activePeers().some(peer => peer.ready) && !matchEnded; }
+function setStartPosition(spawn) {
+  baseSpawn.set(spawn.x,0,spawn.z);
+  camera.position.set(spawn.x,EYE_HEIGHT,spawn.z);
+  camera.rotation.set(-.18,Math.atan2(spawn.x,spawn.z),0,'YXZ');
+  verticalVelocity=0;
+  grounded=true;
+}
+function beginBasePlacement() {
+  if (basePlaced) return;
+  selectedBuild='house';
+  if (buildGhost) scene.remove(buildGhost);
+  buildGhost=makeBuildingMesh('house',true);
+  scene.add(buildGhost);
+  basePrompt.hidden=false;
+  toast('Choose your base location: look at nearby ground and click');
+}
 
 playerNameInput.value=localStorage.getItem('rts-player-name') || '';
 function currentPlayerName() {
@@ -73,14 +156,48 @@ function setOnlineStatus(message) {
   if (uiMode==='game') toast(message);
 }
 
+function restartForNewGame(mode,roomCode='') {
+  if (!basePlaced) return false;
+  sessionStorage.setItem('rts-new-game',JSON.stringify({mode,roomCode,name:playerNameInput.value}));
+  location.reload();
+  return true;
+}
+
 function beginSolo() {
   if (!currentPlayerName()) return;
+  if (restartForNewGame('solo')) return;
   closeMultiplayer();
+  playerHealth=100;
+  playerStamina=100;
+  sprintExhausted=false;
+  matchEnded=false;
+  playerReady=false;
+  if (!basePlaced) {
+    const angle=Math.random()*Math.PI*2;
+    setStartPosition({x:Math.round(Math.cos(angle)*105),z:Math.round(Math.sin(angle)*105)});
+  }
   uiMode='game';
+  beginBasePlacement();
   controls.lock();
 }
 
 playBtn.addEventListener('click',beginSolo);
+enterMatchBtn.addEventListener('click',() => {
+  if (multiplayer.socket?.readyState!==WebSocket.OPEN || !multiplayer.peers.size) {
+    setOnlineStatus('The match is not connected. Choose Quick match or join a room again.');
+    return;
+  }
+  uiMode='game';
+  matchEnded=false;
+  if (basePlaced && !playerReady) {
+    playerReady=true;
+    sendPeerAction({kind:'ready'});
+  }
+  enterMatchBtn.textContent='Resume match';
+  setOnlineStatus(`In match · room ${multiplayer.roomCode}`);
+  beginBasePlacement();
+  controls.lock();
+});
 quickMatchBtn.addEventListener('click',() => beginMatch('quick'));
 createRoomBtn.addEventListener('click',() => beginMatch('create'));
 joinRoomBtn.addEventListener('click',() => beginMatch('join',roomCodeInput.value));
@@ -98,9 +215,8 @@ function beginMatch(mode,roomCode='') {
     roomCodeInput.focus();
     return;
   }
+  if (restartForNewGame(mode,roomCode)) return;
   closeMultiplayer();
-  uiMode='game';
-  controls.lock();
   setOnlineStatus('Connecting to matchmaking…');
   let socket;
   try { socket=new WebSocket(signalingURL()); }
@@ -111,6 +227,7 @@ function beginMatch(mode,roomCode='') {
     socket.send(JSON.stringify(message));
   });
   socket.addEventListener('message',event => {
+    if (multiplayer.socket!==socket) return;
     let message;
     try { message=JSON.parse(event.data); } catch { return; }
     if (message.type==='waiting') {
@@ -119,93 +236,107 @@ function beginMatch(mode,roomCode='') {
       setOnlineStatus(`Waiting for a player · room code ${message.roomCode}`);
     } else if (message.type==='matched') {
       multiplayer.roomCode=message.roomCode;
-      multiplayer.peerId=message.peerId;
+      multiplayer.playerId=message.playerId;
       multiplayer.isHost=message.isHost;
+      const colors=[0x315b88,0x973d4d,0x54854a];
+      const local=message.players.find(player => player.id===message.playerId);
+      sleeve.material.color.set(colors[local?.slot||0]);
+      for (const peer of multiplayer.peers.values()) if (peer.remote) clearRemotePlayer(peer);
+      multiplayer.peers=new Map(message.players.filter(player => player.id!==message.playerId).map(player => [player.id,{...player,ready:false,alive:true,remote:null}]));
+      playerHealth=100;
+      playerStamina=100;
+      sprintExhausted=false;
+      matchEnded=false;
+      playerReady=false;
+      setStartPosition(message.spawn);
       roomCodeInput.value=message.roomCode;
-      setOnlineStatus(`Match found · room ${message.roomCode} · connecting directly…`);
-      createPeerConnection(message.isHost);
-    } else if (message.type==='signal') {
-      handleSignal(message.signal).catch(error => setOnlineStatus(`Connection negotiation failed: ${error.message}`));
+      enterMatchBtn.hidden=false;
+      enterMatchBtn.textContent='Enter match';
+      setOnlineStatus(`Match ready · room ${message.roomCode} · click Enter match in this window`);
+    } else if (message.type==='game') {
+      if (message.packet?.type==='position') updateRemotePlayer(message.packet,message.from);
+      else if (message.packet?.type==='units') updateRemoteUnits(message.packet.units,message.from);
+      else if (message.packet?.type==='action') applyRemoteAction(message.packet.action,message.from);
     } else if (message.type==='peer-left') {
-      clearRemotePlayer();
-      setOnlineStatus('The other player disconnected. You can find another match.');
+      const peer=multiplayer.peers.get(message.playerId);
+      if (peer) { peer.alive=false; clearRemotePlayer(peer); }
+      if (playerReady && !matchEnded && !activePeers().length) finishMatch(true);
+      if (!matchEnded) setOnlineStatus('A player disconnected.');
     } else if (message.type==='error') {
       setOnlineStatus(message.message || 'Matchmaking error.');
     }
   });
-  socket.addEventListener('error',() => setOnlineStatus('Matchmaking server unavailable. Start the server with npm start.'));
+  socket.addEventListener('error',() => {
+    if (multiplayer.socket===socket) setOnlineStatus('Matchmaking server unavailable. Start the server with npm start.');
+  });
   socket.addEventListener('close',() => {
-    if (multiplayer.socket===socket && multiplayer.peer) setOnlineStatus('Matchmaking signaling closed; the direct game connection may continue.');
+    if (multiplayer.socket!==socket) return;
+    for (const peer of multiplayer.peers.values()) clearRemotePlayer(peer);
+    multiplayer.peers.clear();
+    multiplayer.roomCode='';
+    enterMatchBtn.hidden=true;
+    setOnlineStatus('Match connection closed. Choose Quick match or join a room again.');
   });
 }
 
-function sendSignal(signal) {
-  if (multiplayer.socket?.readyState===WebSocket.OPEN && multiplayer.peerId) {
-    multiplayer.socket.send(JSON.stringify({type:'signal',target:multiplayer.peerId,signal}));
+function sendGamePacket(packet) {
+  if (multiplayer.socket?.readyState===WebSocket.OPEN && multiplayer.peers.size) {
+    multiplayer.socket.send(JSON.stringify({type:'game',packet}));
   }
 }
 
-function createPeerConnection(isHost) {
-  const peer=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
-  multiplayer.peer=peer;
-  multiplayer.iceQueue=[];
-  peer.addEventListener('icecandidate',event => {
-    if (event.candidate) sendSignal({type:'ice',candidate:event.candidate});
-  });
-  peer.addEventListener('connectionstatechange',() => {
-    if (peer.connectionState==='connected') setOnlineStatus(`Connected to ${multiplayer.remote?.name || 'player'} · room ${multiplayer.roomCode}`);
-    if (['failed','disconnected'].includes(peer.connectionState)) setOnlineStatus(`Peer connection ${peer.connectionState}. Try joining again.`);
-  });
-  peer.addEventListener('datachannel',event => attachDataChannel(event.channel));
-  if (isHost) {
-    attachDataChannel(peer.createDataChannel('game-presence',{ordered:true}));
-    peer.createOffer().then(offer => peer.setLocalDescription(offer)).then(() => sendSignal({type:'offer',description:peer.localDescription})).catch(error => setOnlineStatus(`Could not start WebRTC: ${error.message}`));
-  }
-}
-
-function attachDataChannel(channel) {
-  multiplayer.channel=channel;
-  channel.addEventListener('open',() => {
-    setOnlineStatus(`Connected to the other player · room ${multiplayer.roomCode}`);
-    for (const action of multiplayer.actionQueue.splice(0)) channel.send(JSON.stringify(action));
-  });
-  channel.addEventListener('close',() => {
-    clearRemotePlayer();
-    if (multiplayer.peer?.connectionState!=='closed') setOnlineStatus('Peer data connection closed.');
-  });
-  channel.addEventListener('message',event => {
-    let message;
-    try { message=JSON.parse(event.data); } catch { return; }
-    if (message.type==='position') updateRemotePlayer(message);
-    else if (message.type==='action') applyRemoteAction(message.action);
-  });
-}
-
-async function handleSignal(signal) {
-  const peer=multiplayer.peer;
-  if (!peer) return;
-  if (signal.type==='offer') {
-    await peer.setRemoteDescription(signal.description);
-    while (multiplayer.iceQueue.length) await peer.addIceCandidate(multiplayer.iceQueue.shift());
-    const answer=await peer.createAnswer();
-    await peer.setLocalDescription(answer);
-    sendSignal({type:'answer',description:peer.localDescription});
-  } else if (signal.type==='answer') {
-    await peer.setRemoteDescription(signal.description);
-    while (multiplayer.iceQueue.length) await peer.addIceCandidate(multiplayer.iceQueue.shift());
-  } else if (signal.type==='ice') {
-    if (!peer.remoteDescription) multiplayer.iceQueue.push(signal.candidate);
-    else await peer.addIceCandidate(signal.candidate);
-  }
-}
-
-function makeRemoteAvatar(name) {
+function makeRemoteAvatar(name,slot) {
   const avatar=new THREE.Group();
-  const body=new THREE.Mesh(new THREE.CapsuleGeometry(.32,.9,4,8),new THREE.MeshLambertMaterial({color:0x45c9c1}));
-  body.position.y=.9;
-  const marker=new THREE.Mesh(new THREE.ConeGeometry(.13,.35,5),new THREE.MeshLambertMaterial({color:0xffdb75}));
-  marker.rotation.x=Math.PI/2;
-  marker.position.set(0,1.2,.38);
+  const cloth=new THREE.MeshLambertMaterial({color:[0x315b88,0x973d4d,0x54854a][slot]||0x315b88});
+  const capeMat=new THREE.MeshLambertMaterial({color:[0x183960,0x571c2b,0x294e29][slot]||0x183960,side:THREE.DoubleSide});
+  const gold=new THREE.MeshLambertMaterial({color:0xe8b953,metalness:.25});
+  const skin=new THREE.MeshLambertMaterial({color:0xc9966b});
+  const steel=new THREE.MeshLambertMaterial({color:0xb4c1c4});
+  const dark=new THREE.MeshLambertMaterial({color:0x382b27});
+  const add=(geometry,material,x,y,z,parent=avatar) => {
+    const mesh=new THREE.Mesh(geometry,material);
+    mesh.position.set(x,y,z);
+    mesh.castShadow=true;
+    parent.add(mesh);
+    return mesh;
+  };
+  add(new THREE.CylinderGeometry(.25,.43,1.0,8),cloth,0,.75,0);
+  add(new THREE.BoxGeometry(.65,.48,.36),steel,0,1.39,0);
+  add(new THREE.BoxGeometry(.68,.1,.4),gold,0,1.13,0);
+  add(new THREE.BoxGeometry(.16,.28,.04),gold,0,1.39,.205);
+  add(new THREE.SphereGeometry(.24,10,8),skin,0,1.88,0);
+  add(new THREE.ConeGeometry(.15,.24,7),dark,0,1.64,.16);
+  add(new THREE.BoxGeometry(.12,.08,.1),skin,0,1.83,.245);
+  for (const x of [-.1,.1]) {
+    add(new THREE.SphereGeometry(.025,6,5),dark,x,1.91,.218);
+  }
+  add(new THREE.CylinderGeometry(.29,.29,.13,9),gold,0,2.14,0);
+  for (let i=0;i<7;i++) {
+    const angle=i*Math.PI*2/7;
+    add(new THREE.ConeGeometry(.075,.22,5),gold,Math.sin(angle)*.23,2.3,Math.cos(angle)*.23);
+  }
+  const cape=add(new THREE.PlaneGeometry(.82,1.25),capeMat,0,.98,-.28);
+  cape.rotation.x=-.16;
+  const legs=[];
+  for (const x of [-.18,.18]) {
+    const leg=new THREE.Group();
+    leg.position.set(x,.58,0);
+    add(new THREE.BoxGeometry(.2,.6,.22),dark,0,-.3,0,leg);
+    add(new THREE.BoxGeometry(.23,.13,.32),dark,0,-.58,.07,leg);
+    avatar.add(leg);
+    legs.push(leg);
+  }
+  const arms=[];
+  for (const side of [-1,1]) {
+    const arm=new THREE.Group();
+    arm.position.set(side*.42,1.54,0);
+    add(new THREE.BoxGeometry(.2,.55,.22),cloth,side*.04,-.27,0,arm);
+    add(new THREE.SphereGeometry(.11,8,6),skin,side*.04,-.58,0,arm);
+    avatar.add(arm);
+    arms.push(arm);
+  }
+  add(new THREE.BoxGeometry(.06,.8,.09),steel,.52,.74,.21);
+  add(new THREE.BoxGeometry(.3,.07,.11),gold,.52,.34,.21);
   const canvas=document.createElement('canvas');
   canvas.width=512; canvas.height=128;
   const context=canvas.getContext('2d');
@@ -216,60 +347,145 @@ function makeRemoteAvatar(name) {
   context.fillStyle='#ffffff'; context.fillText(name,256,82);
   const label=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(canvas),transparent:true,depthTest:false}));
   label.scale.set(3.2,.8,1);
-  label.position.y=2.35;
-  avatar.add(body,marker,label);
-  avatar.userData.name=name;
+  label.position.y=3.12;
+  avatar.add(label);
+  const healthBar=new THREE.Group();
+  healthBar.position.y=2.6;
+  const back=new THREE.Mesh(new THREE.PlaneGeometry(1.2,.17),new THREE.MeshBasicMaterial({color:0x241f1e,depthTest:false}));
+  const fill=new THREE.Mesh(new THREE.PlaneGeometry(1.14,.11),new THREE.MeshBasicMaterial({color:0x65d873,depthTest:false}));
+  fill.position.z=.005;
+  healthBar.add(back,fill);
+  avatar.add(healthBar);
+  avatar.userData={name,legs,arms,walk:0,lastPosition:null,healthBar,healthFill:fill};
   scene.add(avatar);
   return avatar;
 }
 
-function updateRemotePlayer(state) {
+function updateRemotePlayer(state,from) {
+  const peer=multiplayer.peers.get(from);
+  if (!peer || !peer.alive) return;
   if (!Number.isFinite(state.x) || !Number.isFinite(state.z) || !Number.isFinite(state.yaw)) return;
   const name=String(state.name || 'Player').slice(0,20);
-  if (!multiplayer.remote || multiplayer.remote.userData.name!==name) {
-    clearRemotePlayer();
-    multiplayer.remote=makeRemoteAvatar(name);
+  if (!peer.remote || peer.remote.userData.name!==name) {
+    clearRemotePlayer(peer);
+    peer.remote=makeRemoteAvatar(name,peer.slot);
   }
-  multiplayer.remote.position.set(THREE.MathUtils.clamp(state.x,-WORLD_RADIUS,WORLD_RADIUS),0,THREE.MathUtils.clamp(state.z,-WORLD_RADIUS,WORLD_RADIUS));
-  multiplayer.remote.rotation.y=state.yaw;
+  const avatar=peer.remote;
+  avatar.userData.peerId=from;
+  const next=new THREE.Vector3(THREE.MathUtils.clamp(state.x,-WORLD_RADIUS,WORLD_RADIUS),0,THREE.MathUtils.clamp(state.z,-WORLD_RADIUS,WORLD_RADIUS));
+  const step=avatar.userData.lastPosition ? avatar.userData.lastPosition.distanceTo(next) : 0;
+  avatar.userData.walk+=Math.min(step,1)*7;
+  avatar.userData.lastPosition=next.clone();
+  avatar.position.copy(next);
+  avatar.rotation.y=state.yaw;
+  const swing=Math.min(1,step*3)*Math.sin(avatar.userData.walk);
+  avatar.userData.legs[0].rotation.x=swing*.5;
+  avatar.userData.legs[1].rotation.x=-swing*.5;
+  avatar.userData.arms[0].rotation.x=-swing*.28;
+  avatar.userData.arms[1].rotation.x=swing*.28;
+  if (Number.isFinite(state.health)) {
+    const fraction=THREE.MathUtils.clamp(state.health/100,0,1);
+    avatar.userData.healthFill.scale.x=fraction;
+    avatar.userData.healthFill.position.x=-(1-fraction)*.57;
+  }
 }
 
-function clearRemotePlayer() {
-  if (multiplayer.remote) {
-    scene.remove(multiplayer.remote);
-    multiplayer.remote.traverse(object => {
+function updateRemoteUnits(units,from) {
+  if (!Array.isArray(units)) return;
+  for (const state of units.slice(0,100)) {
+    const unit=npcs.find(n=>n.userData.id===state.id && n.userData.ownerId===from);
+    if (!unit || !Number.isFinite(state.x) || !Number.isFinite(state.z) || !Number.isFinite(state.yaw)) continue;
+    unit.position.set(THREE.MathUtils.clamp(state.x,-WORLD_RADIUS,WORLD_RADIUS),0,THREE.MathUtils.clamp(state.z,-WORLD_RADIUS,WORLD_RADIUS));
+    unit.rotation.y=state.yaw;
+    unit.userData.state=state.state || 'Following orders';
+    unit.userData.attacking=!!state.attacking;
+  }
+}
+
+function clearRemotePlayer(peer) {
+  if (peer.remote) {
+    scene.remove(peer.remote);
+    peer.remote.traverse(object => {
       object.geometry?.dispose();
       if (Array.isArray(object.material)) object.material.forEach(material => material.dispose());
       else object.material?.dispose();
     });
   }
-  multiplayer.remote=null;
+  peer.remote=null;
 }
 
 function closeMultiplayer() {
-  clearRemotePlayer();
-  multiplayer.channel?.close();
-  multiplayer.peer?.close();
+  for (const peer of multiplayer.peers.values()) clearRemotePlayer(peer);
   multiplayer.socket?.close();
-  multiplayer.channel=null; multiplayer.peer=null; multiplayer.socket=null;
-  multiplayer.peerId=''; multiplayer.roomCode=''; multiplayer.isHost=false;
-  multiplayer.actionQueue=[];
+  multiplayer.socket=null;
+  multiplayer.peers.clear(); multiplayer.roomCode='';
+  multiplayer.playerId='';
+  playerReady=false;
   multiplayer.status='Offline';
+  enterMatchBtn.hidden=true;
 }
 
 function sendPeerAction(action) {
-  const packet={type:'action',action};
-  if (multiplayer.channel?.readyState==='open') multiplayer.channel.send(JSON.stringify(packet));
-  else if (multiplayer.socket) multiplayer.actionQueue.push(packet);
+  sendGamePacket({type:'action',action});
+}
+
+function finishMatch(won,place=won ? 1 : activePeers().length+1) {
+  if (matchEnded) return;
+  matchEnded=true;
+  playerReady=false;
+  fallbackLook=false;
+  controls.unlock();
+  uiMode='result';
+  startEl.style.display='none';
+  outcomeTitle.textContent=won ? 'Victory Royale' : 'Defeat';
+  outcomePlace.textContent=`${place}${place===1?'st':place===2?'nd':'rd'} place`;
+  outcomeEl.hidden=false;
+  playSound(won ? 'victory' : 'death',.26);
+}
+
+function damagePlayer(amount) {
+  if (matchEnded || !playerReady || !basePlaced) return;
+  playerHealth=Math.max(0,playerHealth-Math.min(30,Math.max(0,Number(amount)||0)));
+  playSound('hit',.2);
+  if (playerHealth===0) {
+    sendPeerAction({kind:'defeat'});
+    finishMatch(false,activePeers().length+1);
+  }
+}
+
+function damageUnit(id,amount) {
+  const unit=npcs.find(n=>n.userData.id===id);
+  if (!unit || !unit.userData.alive) return;
+  unit.userData.hp=Math.max(0,unit.userData.hp-Math.min(30,Math.max(0,Number(amount)||0)));
+  playSound('hit',.08);
+  if (unit.userData.hp===0) { playSound('death',.09); killNPC(unit); }
 }
 
 function findBuildingAt(type,x,z) {
   return buildings.find(building => building.userData.type===type && Math.abs(building.position.x-x)<.1 && Math.abs(building.position.z-z)<.1);
 }
 
-function applyRemoteAction(action) {
+function applyRemoteAction(action,from) {
   if (!action || typeof action.kind!=='string') return;
-  if (action.kind==='build' && ['stockpile','granary','lumber','hunting','barracks','quarry'].includes(action.buildingType) && Number.isFinite(action.x) && Number.isFinite(action.z)) {
+  if (action.kind==='ready') {
+    const peer=multiplayer.peers.get(from);
+    if (peer) peer.ready=true;
+  } else if (action.kind==='player-hit') {
+    if (action.targetId!==multiplayer.playerId) return;
+    if (action.weapon==='archer') playSound('bow',.11);
+    else if (action.weapon==='swordsman') playSound('sword',.13);
+    damagePlayer(action.amount);
+  } else if (action.kind==='unit-hit' && typeof action.unitId==='string') {
+    if (action.weapon==='archer') playSound('bow',.08);
+    else if (action.weapon==='swordsman') playSound('sword',.08);
+    damageUnit(action.unitId,action.amount);
+  } else if (action.kind==='defeat') {
+    const peer=multiplayer.peers.get(from);
+    if (peer) { peer.alive=false; clearRemotePlayer(peer); }
+    if (!activePeers().length && playerReady) finishMatch(true);
+  } else if (action.kind==='base' && Number.isFinite(action.x) && Number.isFinite(action.z)) {
+    placeStarterBase(action.x,action.z,from,false,action.storage);
+  } else if (action.kind==='build' && ['stockpile','granary','lumber','hunting','barracks','quarry'].includes(action.buildingType) && Number.isFinite(action.x) && Number.isFinite(action.z)) {
     if (buildings.some(building => Math.hypot(building.position.x-action.x,building.position.z-action.z)<.5)) return;
     const price=costs[action.buildingType];
     if (!canAfford(price)) return toast('A shared build failed: resources differ between players');
@@ -281,20 +497,35 @@ function applyRemoteAction(action) {
       pay(recruitCosts[action.unit]);
       const npc=makeNPC(action.unit,spawnPosition(barracks));
       npc.userData.home=barracks;
+      npc.userData.id=action.unitId;
+      npc.userData.ownerId=from;
       barracks.userData.units.push(npc);
+      playNearby('train',barracks.position,.13);
     }
   } else if (action.kind==='rally' && Number.isFinite(action.x) && Number.isFinite(action.z) && Number.isFinite(action.rallyX) && Number.isFinite(action.rallyZ)) {
     const barracks=findBuildingAt('barracks',action.x,action.z);
-    if (barracks) setRallyPoint(barracks,new THREE.Vector3(action.rallyX,0,action.rallyZ),false);
+    if (barracks) setRallyPoint(barracks,new THREE.Vector3(action.rallyX,0,action.rallyZ),false,!!action.attackPlayer);
   } else if (action.kind==='demolish' && Number.isFinite(action.x) && Number.isFinite(action.z)) {
     const building=buildings.find(item => item.userData.type!=='house' && Math.abs(item.position.x-action.x)<.1 && Math.abs(item.position.z-action.z)<.1);
     if (building) demolishSelectedBuilding(building,false);
   }
 }
-controls.addEventListener('lock', () => { startEl.style.display = 'none'; });
+controls.addEventListener('lock', () => { fallbackLook=false; startEl.style.display = 'none'; });
 controls.addEventListener('unlock', () => {
   if (uiMode === 'game') uiMode = 'main';
   startEl.style.display = uiMode === 'main' ? 'flex' : 'none';
+});
+document.addEventListener('pointerlockerror',() => {
+  if (uiMode!=='game') return;
+  fallbackLook=true;
+  startEl.style.display='none';
+  toast('Mouse look fallback active · move mouse to turn · Esc for menu');
+});
+document.addEventListener('mousemove',event => {
+  if (!fallbackLook || uiMode!=='game') return;
+  camera.rotation.order='YXZ';
+  camera.rotation.y-=event.movementX*.002;
+  camera.rotation.x=THREE.MathUtils.clamp(camera.rotation.x-event.movementY*.002,-Math.PI/2+.02,Math.PI/2-.02);
 });
 
 const hemi = new THREE.HemisphereLight(0xddeeff, 0x56603a, 1.8);
@@ -320,14 +551,16 @@ const MULE_LOAD = 32;
 const QUARRY_MINING_TIME = 6.5;
 const HUNTER_CARRY_SPEED = 1.25;
 const EYE_HEIGHT = 2;
-const WALK_SPEED = 7.5;
-const SPRINT_MULTIPLIER = 1.65;
+const WALK_SPEED = 3.75;
+const SPRINT_MULTIPLIER = 2;
 const JUMP_SPEED = 8;
 const GRAVITY = 20;
 const keys = {};
 let jumpRequested = false;
 let verticalVelocity = 0;
 let grounded = true;
+let footstepDistance = 0;
+let lastPlayerFootstepAt = 0;
 const clock = new THREE.Clock();
 let selectedBuild = null;
 let buildGhost = null;
@@ -335,6 +568,7 @@ let lastToastTimer = null;
 
 const resources = { wood: 0, food: 0, stone: 0 };
 const costs = {
+  house: {},
   stockpile: {},
   granary: {},
   lumber: { wood: 3 },
@@ -352,7 +586,6 @@ const trees = [];
 const rocks = [];
 const stoneDeposits = [];
 const deer = [];
-const raiders = [];
 const npcs = [];
 const herds = [];
 let deerSpawnTimer = 0;
@@ -365,6 +598,10 @@ function toast(msg) {
   toastEl.style.opacity = '1';
   clearTimeout(lastToastTimer);
   lastToastTimer = setTimeout(() => toastEl.style.opacity = '0', 1200);
+}
+function playNearby(kind,pos,volume=.16) {
+  const distance=dist2D(pos,camera.position);
+  if (distance<28) playSound(kind,volume*(1-distance/30));
 }
 
 function rand(a, b) { return a + Math.random() * (b - a); }
@@ -558,39 +795,6 @@ function spawnHerd(edge=false) {
   herds.push(herd);
 }
 for (let i=0;i<4;i++) spawnHerd();
-
-function makeRaider(pos) {
-  const g = new THREE.Group();
-  const body = new THREE.Mesh(
-    new THREE.CapsuleGeometry(.35,.85,4,8),
-    new THREE.MeshLambertMaterial({color:0x7a2424})
-  );
-  body.position.y = .85;
-  const sword = new THREE.Mesh(
-    new THREE.BoxGeometry(.08,.08,1.0),
-    new THREE.MeshLambertMaterial({color:0xcccccc})
-  );
-  sword.position.set(.45,.85,.35);
-  sword.rotation.x = .6;
-  g.add(body,sword);
-  g.position.copy(pos);
-  g.userData = { alive:true, hp:35, dir:Math.random()*Math.PI*2, turnIn:rand(1,3), attackTimer:0 };
-  scene.add(g);
-  raiders.push(g);
-}
-
-function syncEnemies() {
-  enemiesEnabled = enemyToggle.checked;
-  if (!enemiesEnabled) {
-    for (const r of raiders) { r.userData.alive = false; scene.remove(r); }
-    enemySpawnTimer = 0;
-  } else if (uiMode !== 'main') {
-    const alive = raiders.filter(r => r.userData.alive).length;
-    for (let i=alive; i<7; i++) makeRaider(randomPointInCircle(24, WORLD_RADIUS-6));
-  }
-}
-enemyToggle.addEventListener('change', syncEnemies);
-playBtn.addEventListener('click', syncEnemies);
 
 function addSelectionArrow(group, height) {
   const arrow = new THREE.Group();
@@ -831,6 +1035,7 @@ function addResource(kind, amount, preferred = null) {
     if (!remaining) break;
   }
   syncResources();
+  if (amount>remaining && preferred) playNearby('gather',preferred.position,.09);
   return amount - remaining;
 }
 
@@ -896,6 +1101,7 @@ for (const [type,name,cost,key] of buildingChoices) {
   buildOptions.append(button);
 }
 function openBuildMenu() {
+  if (!basePlaced) return toast('Place your base first');
   uiMode = 'buildMenu';
   buildMenu.hidden = false;
   controls.unlock();
@@ -906,6 +1112,7 @@ function closeBuildMenu() {
   controls.lock();
 }
 function selectBuilding(type) {
+  if (!basePlaced && type!=='house') return toast('Place your base first');
   clearSelection();
   selectedBuild = type;
   if (buildGhost) scene.remove(buildGhost);
@@ -914,6 +1121,7 @@ function selectBuilding(type) {
   toast(type === 'quarry' ? 'Build mode: quarry · place on a gray stone deposit' : `Build mode: ${type}`);
 }
 function cancelBuild() {
+  if (!basePlaced) return;
   selectedBuild = null;
   if (buildGhost) scene.remove(buildGhost);
   buildGhost = null;
@@ -930,13 +1138,20 @@ function getAimGroundPoint() {
 }
 function updateGhost() {
   if (!buildGhost) return;
-  const p = getAimGroundPoint();
+  let p;
+  if (selectedBuild==='house' && !basePlaced) {
+    const forward=new THREE.Vector3();
+    camera.getWorldDirection(forward);
+    forward.y=0;
+    forward.normalize();
+    p=clampToWorld(camera.position.clone().addScaledVector(forward,12),5);
+  } else p=getAimGroundPoint();
   if (!p) { buildGhost.visible = false; return; }
   buildGhost.visible = true;
   const x = Math.round(p.x / GRID) * GRID;
   const z = Math.round(p.z / GRID) * GRID;
   buildGhost.position.set(x,0,z);
-  const ok = isBuildingSpotFree(x,z,selectedBuild) && canAfford(costs[selectedBuild]);
+  const ok = isBuildingSpotFree(x,z,selectedBuild) && canAfford(costs[selectedBuild]) && (selectedBuild!=='house' || (dist2D(buildGhost.position,baseSpawn)<29 && dist2D(buildGhost.position,camera.position)>7 && findStarterStores(x,z)));
   buildGhost.traverse(o => {
     if (o.material?.emissive) o.material.emissive.set(ok ? 0x143a14 : 0x481111);
   });
@@ -945,13 +1160,63 @@ function updateGhost() {
 function placeBuilding() {
   if (!selectedBuild || !buildGhost?.visible) return;
   const {x,z} = buildGhost.position;
+  if (!basePlaced) {
+    if (selectedBuild!=='house' || dist2D(buildGhost.position,baseSpawn)>=29 || dist2D(buildGhost.position,camera.position)<=7) return toast('Choose clear ground a few steps ahead near your starting border');
+    const storage=findStarterStores(x,z);
+    if (!isBuildingSpotFree(x,z,'house') || !storage) return toast('Choose a clear area for your base and stores');
+    placeStarterBase(x,z,multiplayer.playerId||'sandbox',true,storage);
+    cancelBuild();
+    return;
+  }
   if (!isBuildingSpotFree(x,z,selectedBuild)) return toast(selectedBuild === 'quarry' ? 'Build the quarry on an empty stone deposit' : 'Blocked tile');
   const cost = costs[selectedBuild];
   if (!canAfford(cost)) return toast('Not enough resources');
   pay(cost);
   createBuilding(selectedBuild,x,z);
   sendPeerAction({kind:'build',buildingType:selectedBuild,x,z});
+  playSound('build',.2);
   toast(`${selectedBuild} built`);
+}
+
+function findStarterStores(x,z) {
+  const candidates=[];
+  for (let radius=1;radius<=3;radius++) {
+    for (let dx=-radius;dx<=radius;dx++) for (let dz=-radius;dz<=radius;dz++) {
+      if (Math.max(Math.abs(dx),Math.abs(dz))!==radius) continue;
+      const sx=x+dx*GRID, sz=z+dz*GRID;
+      if (isBuildingSpotFree(sx,sz,'stockpile') && Math.hypot(sx-x,sz-z)>=GRID) candidates.push({x:sx,z:sz});
+    }
+    if (candidates.length>=2) break;
+  }
+  const first=candidates[0];
+  const second=first && candidates.find(spot => spot!==first && (Math.abs(spot.x-first.x)>=GRID || Math.abs(spot.z-first.z)>=GRID));
+  return first && second ? {stockpile:first,granary:second} : null;
+}
+
+function placeStarterBase(x,z,ownerId,replicate,storage) {
+  if (!storage?.stockpile || !storage?.granary || ![x,z,storage.stockpile.x,storage.stockpile.z,storage.granary.x,storage.granary.z].every(Number.isFinite)) return;
+  if (Math.hypot(x,z)>WORLD_RADIUS-4 || buildings.some(building => building.userData.type==='house' && dist2D(building.position,{x,z})<1)) return;
+  const house=createBuilding('house',x,z);
+  house.userData.ownerId=ownerId;
+  const stockpile=createBuilding('stockpile',storage.stockpile.x,storage.stockpile.z);
+  const granary=createBuilding('granary',storage.granary.x,storage.granary.z);
+  stockpile.userData.ownerId=ownerId;
+  granary.userData.ownerId=ownerId;
+  addResource('wood',120,stockpile);
+  addResource('food',35,granary);
+  addResource('stone',30,stockpile);
+  if (replicate) sendPeerAction({kind:'base',x,z,storage});
+  if (ownerId===multiplayer.playerId || ownerId==='sandbox') {
+    basePlaced=true;
+    basePrompt.hidden=true;
+    selectedBuild=null;
+    if (buildGhost) scene.remove(buildGhost);
+    buildGhost=null;
+    playerReady=true;
+    sendPeerAction({kind:'ready'});
+    playSound('build',.2);
+    toast('Base established · press E to build');
+  }
 }
 
 function createBuilding(type,x,z) {
@@ -960,6 +1225,7 @@ function createBuilding(type,x,z) {
   b.userData.radius = 2.0;
   b.userData.units = [];
   b.userData.rallyPoint = null;
+  b.userData.attackPlayer = false;
   b.userData.rallyMarker = null;
   b.userData.rangeIndicator = null;
   if (type === 'lumber' || type === 'hunting' || type === 'quarry') {
@@ -1281,16 +1547,20 @@ function recruitSoldier(kind, building) {
   pay(cost);
   const npc = makeNPC(kind, spawnPosition(building));
   npc.userData.home = building;
+  npc.userData.id=crypto.randomUUID();
+  npc.userData.ownerId=multiplayer.playerId || 'sandbox';
   building.userData.units.push(npc);
   updateSelectionArrows();
-  sendPeerAction({kind:'recruit',unit:kind,x:building.position.x,z:building.position.z});
+  sendPeerAction({kind:'recruit',unit:kind,unitId:npc.userData.id,x:building.position.x,z:building.position.z});
+  playSound('train',.2);
   toast(`${kind} recruited`);
   updateDetails();
 }
 
-function setRallyPoint(building, point, replicate=true) {
+function setRallyPoint(building, point, replicate=true, attackPlayer=false) {
   const pos = clampToWorld(point.clone(), 3);
   building.userData.rallyPoint = pos;
+  building.userData.attackPlayer = attackPlayer;
   if (building.userData.rallyMarker) scene.remove(building.userData.rallyMarker);
   const marker = new THREE.Group();
   const ring = new THREE.Mesh(new THREE.RingGeometry(.75,.91,32), new THREE.MeshBasicMaterial({ color:0xf7d75d, side:THREE.DoubleSide }));
@@ -1303,8 +1573,8 @@ function setRallyPoint(building, point, replicate=true) {
   scene.add(marker);
   building.userData.rallyMarker = marker;
   for (const unit of building.userData.units) unit.userData.patrolTarget = null;
-  if (replicate) sendPeerAction({kind:'rally',x:building.position.x,z:building.position.z,rallyX:pos.x,rallyZ:pos.z});
-  toast('Barracks rally point assigned');
+  if (replicate) sendPeerAction({kind:'rally',x:building.position.x,z:building.position.z,rallyX:pos.x,rallyZ:pos.z,attackPlayer});
+  toast(attackPlayer ? 'Troops ordered to attack the rival king' : 'Barracks rally point assigned');
 }
 
 function nearestAlive(arr, pos, max=Infinity) {
@@ -1324,6 +1594,7 @@ function availableStorage(kind) {
 }
 
 function killDeerForHunter(animal,hunter) {
+  playNearby('hit',animal.position,.08);
   animal.userData.alive=false;
   if (selectedObject===animal) clearSelection();
   animal.userData.selectionArrow.visible=false;
@@ -1603,6 +1874,7 @@ function updateHunter(n,dt) {
     if (d.actionTimer>.55) {
       d.actionTimer=0;
       d.target.userData.hp-=10;
+      playNearby('sword',n.position,.1);
       if (d.target.userData.hp<=0) {
         killDeerForHunter(d.target,n);
         d.carrying=MEAT_PER_DEER;
@@ -1701,18 +1973,49 @@ function updateMuleHandler(n,dt) {
 
 function updateSoldier(n,dt) {
   const d=n.userData;
-  const enemy=nearestAlive(raiders,n.position,d.kind==='archer' ? 8 : 2.2);
-  if (enemy) {
-    d.state=`Fighting a raider`;
-    d.actionTimer+=dt;
-    if (d.kind==='swordsman') moveToward(n,enemy.position,d.speed,dt,1.05);
-    if (d.actionTimer>.85) {
+  if (multiplayer.peers.size && d.ownerId!==multiplayer.playerId) return;
+  const reach=d.kind==='archer' ? 10 : 1.65;
+  const aggro=d.kind==='archer' ? 14 : 8;
+  const readyForCombat=combatReady();
+  const enemyUnits=readyForCombat ? npcs.filter(other => other!==n && other.userData.alive && other.userData.ownerId && other.userData.ownerId!==d.ownerId && ['swordsman','archer'].includes(other.userData.kind)) : [];
+  let target=nearestAlive(enemyUnits,n.position,aggro);
+  const rivals=readyForCombat ? activePeers().filter(peer => peer.ready && peer.remote).map(peer => peer.remote) : [];
+  const pursuingPlayer=!!(d.home?.userData.attackPlayer || d.attackPlayer);
+  for (const rival of rivals) {
+    const rivalDistance=dist2D(rival.position,n.position);
+    if ((rivalDistance<aggro || pursuingPlayer) && (!target || rivalDistance<dist2D(target.position,n.position))) target=rival;
+  }
+  if (readyForCombat && d.committedTarget && (rivals.includes(d.committedTarget) || d.committedTarget.userData.alive)) target=d.committedTarget;
+  else if (d.committedTarget) { d.committedTarget=null; d.actionTimer=0; }
+  if (target) {
+    const isPlayer=rivals.includes(target);
+    d.state=isPlayer ? 'Attacking rival king' : `Fighting enemy ${target.userData.kind}`;
+    const distance=dist2D(target.position,n.position);
+    if (distance>reach && !d.committedTarget) moveToward(n,target.position,d.speed,dt,reach*.8);
+    n.rotation.y=Math.atan2(target.position.x-n.position.x,target.position.z-n.position.z);
+    if (distance<=reach && !d.committedTarget) {
+      d.committedTarget=target;
       d.actionTimer=0;
-      enemy.userData.hp-=d.kind==='archer' ? 9 : 14;
-      if (enemy.userData.hp<=0) { enemy.userData.alive=false; scene.remove(enemy); }
+    }
+    d.attacking=d.committedTarget===target;
+    if (d.attacking && readyForCombat) {
+      d.actionTimer+=dt;
+      if (d.actionTimer >= (d.kind==='archer' ? 1.25 : .9)) {
+        d.actionTimer=0;
+        const amount=d.kind==='archer' ? 10 : 16;
+        playNearby(d.kind==='archer' ? 'bow' : 'sword',n.position,.16);
+        if (isPlayer) sendPeerAction({kind:'player-hit',targetId:target.userData.peerId,amount,weapon:d.kind});
+        else {
+          damageUnit(target.userData.id,amount);
+          sendPeerAction({kind:'unit-hit',unitId:target.userData.id,amount,weapon:d.kind});
+        }
+        d.committedTarget=null;
+      }
     }
     return;
   }
+  d.attacking=false;
+  d.actionTimer=0;
   const center = d.home?.userData.rallyPoint || d.orphanRally;
   if (!center) {
     d.state='Waiting for a rally point';
@@ -1753,8 +2056,22 @@ function updateNPCVisuals(dt) {
   for (const n of npcs) {
     const d=n.userData;
     d.animationTime+=dt;
+    if (d.lastAudioPosition && dist2D(n.position,d.lastAudioPosition)>.12 && !d.insideHome && clock.elapsedTime-(d.lastFootstepAt||0)>.96) {
+      playNearby('step',n.position,.045);
+      d.lastFootstepAt=clock.elapsedTime;
+    }
+    d.lastAudioPosition=n.position.clone();
+    if (d.mining && clock.elapsedTime-(d.lastWorkSoundAt||0)>1.8) {
+      playNearby('mine',n.position,.075);
+      d.lastWorkSoundAt=clock.elapsedTime;
+    }
+    if (d.kind==='lumberjack' && d.state==='Chopping a tree' && clock.elapsedTime-(d.lastWorkSoundAt||0)>1.7) {
+      playNearby('chop',n.position,.09);
+      d.lastWorkSoundAt=clock.elapsedTime;
+    }
     const sleepTarget=d.sleeping ? -Math.PI/2 : 0;
     d.model.rotation.z=THREE.MathUtils.damp(d.model.rotation.z,sleepTarget,8,dt);
+    if (d.kind==='swordsman' || d.kind==='archer') d.model.rotation.x=THREE.MathUtils.damp(d.model.rotation.x,d.attacking ? Math.sin(d.animationTime*13)*.12 : 0,12,dt);
     d.model.position.y=THREE.MathUtils.damp(d.model.position.y,d.sleeping ? .28+Math.sin(d.animationTime*2)*.025 : 0,8,dt);
     d.bar.quaternion.copy(n.quaternion).invert().multiply(camera.quaternion);
     const fraction=Math.max(0,d.hp/d.maxHp);
@@ -1880,34 +2197,6 @@ function updateWildlife(dt) {
     if (herds[i].members.every(animal => !animal.userData.alive)) herds.splice(i,1);
   }
 
-  for (const r of raiders) {
-    if (!r.userData.alive) continue;
-    r.userData.turnIn -= dt;
-    const victim=nearestAlive(npcs,r.position,7);
-    if (victim) {
-      if (moveToward(r,victim.position,2.3,dt,1.05)) {
-        r.userData.attackTimer+=dt;
-        if (r.userData.attackTimer>.9) {
-          r.userData.attackTimer=0;
-          victim.userData.hp-=8;
-          if (victim.userData.hp<=0) killNPC(victim);
-        }
-      }
-      continue;
-    }
-    const pd=dist2D(r.position,camera.position);
-    if (pd<9) {
-      moveToward(r,camera.position,2.4,dt,1.4);
-    } else {
-      if (r.userData.turnIn<=0 || !r.userData.wanderTarget || dist2D(r.position,r.userData.wanderTarget)<.5) {
-        r.userData.turnIn=rand(1,3);
-        r.userData.dir += rand(-1.6,1.6);
-        r.userData.wanderTarget=clampToWorld(r.position.clone().add(new THREE.Vector3(Math.sin(r.userData.dir)*6,0,Math.cos(r.userData.dir)*6)),2);
-      }
-      moveToward(r,r.userData.wanderTarget,1,dt,.3);
-      r.userData.dir=r.rotation.y;
-    }
-  }
 }
 
 function collidesBuilding(pos) {
@@ -1915,9 +2204,14 @@ function collidesBuilding(pos) {
 }
 
 function updatePlayer(dt) {
-  if (!controls.isLocked) return;
+  if (!canPlay()) return;
+  const before=camera.position.clone();
   const forwardInput=Number(!!keys.KeyW)-Number(!!keys.KeyS);
   const sideInput=Number(!!keys.KeyD)-Number(!!keys.KeyA);
+  if (sprintExhausted && playerStamina>=25) sprintExhausted=false;
+  const sprinting=!!(forwardInput || sideInput) && !!(keys.ShiftLeft || keys.ShiftRight) && !sprintExhausted && playerStamina>0;
+  playerStamina=THREE.MathUtils.clamp(playerStamina+(sprinting ? -25 : 17)*dt,0,100);
+  if (playerStamina===0) sprintExhausted=true;
   if (forwardInput || sideInput) {
     const forward=new THREE.Vector3();
     camera.getWorldDirection(forward);
@@ -1925,7 +2219,6 @@ function updatePlayer(dt) {
     forward.normalize();
     const right=forward.clone().cross(new THREE.Vector3(0,1,0));
     const movement=forward.multiplyScalar(forwardInput).add(right.multiplyScalar(sideInput)).normalize();
-    const sprinting=keys.ShiftLeft || keys.ShiftRight;
     const distance=WALK_SPEED*(sprinting ? SPRINT_MULTIPLIER : 1)*dt;
     const canMoveTo=pos => Math.hypot(pos.x,pos.z)<WORLD_RADIUS-1.1 && !collidesBuilding(pos);
     const xStep=camera.position.clone();
@@ -1935,10 +2228,19 @@ function updatePlayer(dt) {
     zStep.z+=movement.z*distance;
     if (canMoveTo(zStep)) camera.position.z=zStep.z;
   }
+  if (grounded) {
+    footstepDistance+=dist2D(before,camera.position);
+    if (footstepDistance>.9 && clock.elapsedTime-lastPlayerFootstepAt>.24) {
+      playSound('step',keys.ShiftLeft || keys.ShiftRight ? .12 : .075);
+      lastPlayerFootstepAt=clock.elapsedTime;
+      footstepDistance=0;
+    }
+  }
 
   if (jumpRequested && grounded) {
     verticalVelocity=JUMP_SPEED;
     grounded=false;
+    playSound('jump',.1);
   }
   jumpRequested=false;
   if (!grounded) {
@@ -1953,23 +2255,34 @@ function updatePlayer(dt) {
 }
 
 function swordAttack() {
-  const origin=camera.position.clone();
+  if (matchEnded || performance.now()-lastSwordAttack<650) return false;
+  lastSwordAttack=performance.now();
+  swordSwingTime=.38;
+  playSound('sword',.22);
   const dir=new THREE.Vector3(); camera.getWorldDirection(dir);
+  dir.y=0;
+  dir.normalize();
   let best=null, bestScore=999;
-  for (const r of raiders) {
-    if (!r.userData.alive) continue;
-    const to=r.position.clone().sub(origin);
+  const enemyUnits=npcs.filter(unit => unit.userData.alive && unit.userData.ownerId && unit.userData.ownerId!==multiplayer.playerId && unit.userData.ownerId!=='sandbox');
+  const rivalKings=combatReady() ? activePeers().filter(peer => peer.ready && peer.remote).map(peer => peer.remote) : [];
+  for (const r of [...enemyUnits,...rivalKings]) {
+    const to=r.position.clone().sub(camera.position);
+    to.y=0;
     const dist=to.length();
-    if (dist>3.0) continue;
+    if (dist>3.7) continue;
     to.normalize();
-    const angle=dir.angleTo(to);
-    if (angle<.65 && dist<bestScore) {best=r; bestScore=dist;}
+    if (dir.dot(to)>(dist<2.2 ? -.15 : .45) && dist<bestScore) {best=r; bestScore=dist;}
   }
   if (best) {
-    best.userData.hp-=20;
-    if (best.userData.hp<=0) {best.userData.alive=false; scene.remove(best);}
+    if (rivalKings.includes(best)) sendPeerAction({kind:'player-hit',targetId:best.userData.peerId,amount:20,weapon:'swordsman'});
+    else {
+      damageUnit(best.userData.id,20);
+      sendPeerAction({kind:'unit-hit',unitId:best.userData.id,amount:20});
+    }
     toast('Sword hit');
+    return true;
   }
+  return false;
 }
 
 function selectionBuilding() {
@@ -2038,7 +2351,7 @@ function updateDetails() {
     detailTitle.textContent = { house:'Base House', stockpile:'Stockpile', granary:'Granary', lumber:'Lumber Camp', hunting:'Hunting Lodge', barracks:'Barracks', quarry:'Quarry' }[type];
     if (type === 'barracks') {
       const rally = b.userData.rallyPoint;
-      detailBody.textContent = `Troops: ${b.userData.units.length}\nRally: ${rally ? `${Math.round(rally.x)}, ${Math.round(rally.z)}` : 'not assigned'}\nLook at the ground and press Q to set the rally point.`;
+      detailBody.textContent = `Troops: ${b.userData.units.length}\nRally: ${rally ? `${Math.round(rally.x)}, ${Math.round(rally.z)}` : 'not assigned'}\nOrder: ${b.userData.attackPlayer ? 'Pursue rival king' : 'Patrol'}\nLook at ground and press Q to rally, or aim at rival king and press Q to attack.`;
     } else if (type === 'quarry') {
       const miners=b.userData.units.filter(unit => unit.userData.kind==='quarryman');
       const mule=b.userData.mule;
@@ -2098,16 +2411,21 @@ function aimedSelectable() {
 
 document.addEventListener('keydown', e => {
   keys[e.code]=true;
-  if (e.code==='Space' && controls.isLocked) {
+  if (e.code==='Space' && canPlay()) {
     e.preventDefault();
     if (!e.repeat) jumpRequested=true;
   }
-  if (e.code==='Tab' && controls.isLocked) {
+  if (e.code==='Tab' && canPlay()) {
     e.preventDefault();
     if (!e.repeat) inventoryEl.hidden = !inventoryEl.hidden;
     return;
   }
   if (e.code==='Escape') {
+    if (fallbackLook) {
+      fallbackLook=false;
+      uiMode='main';
+      startEl.style.display='flex';
+    }
     cancelBuild();
     clearSelection();
     if (uiMode === 'buildMenu') {
@@ -2119,7 +2437,7 @@ document.addEventListener('keydown', e => {
   }
   if (e.code==='KeyE' && !e.repeat) {
     if (uiMode === 'buildMenu') closeBuildMenu();
-    else if (controls.isLocked) openBuildMenu();
+    else if (canPlay()) openBuildMenu();
     return;
   }
   if (uiMode==='buildMenu' && !e.repeat) {
@@ -2130,7 +2448,7 @@ document.addEventListener('keydown', e => {
       return;
     }
   }
-  if (!controls.isLocked) return;
+  if (!canPlay()) return;
   if (e.code==='KeyX' && !e.repeat) { demolishSelectedBuilding(); return; }
   const barracks = selectionBuilding();
   if (barracks?.userData.type === 'barracks' && !e.repeat) {
@@ -2139,6 +2457,16 @@ document.addEventListener('keydown', e => {
   }
   if (e.code==='KeyQ' && !e.repeat) {
     if (!barracks || barracks.userData.type !== 'barracks') return toast('Select a barracks first');
+    if (activePeers().some(peer => peer.remote) && !matchEnded) {
+      const ray=new THREE.Raycaster();
+      ray.setFromCamera(new THREE.Vector2(0,0),camera);
+      ray.far=95;
+      const aimedPeer=activePeers().find(peer => peer.remote && ray.intersectObject(peer.remote,true).length);
+      if (aimedPeer) {
+        setRallyPoint(barracks,aimedPeer.remote.position,true,true);
+        return;
+      }
+    }
     const point = getAimGroundPoint();
     if (!point) return toast('Look at nearby ground to set rally point');
     setRallyPoint(barracks,point);
@@ -2151,15 +2479,14 @@ addEventListener('blur', () => {
 });
 
 document.addEventListener('mousedown', e => {
-  if (!controls.isLocked) return;
+  if (!canPlay()) return;
   if (e.button===0) {
     if (selectedBuild) placeBuilding();
     else {
-      const target = aimedSelectable();
-      if (target) selectObject(target);
-      else {
-        clearSelection();
-        swordAttack();
+      if (!swordAttack()) {
+        const target = aimedSelectable();
+        if (target) selectObject(target);
+        else clearSelection();
       }
     }
   }
@@ -2168,6 +2495,10 @@ document.addEventListener('mousedown', e => {
 document.addEventListener('contextmenu', e => e.preventDefault());
 
 function updateHUD() {
+  healthFill.style.width=`${playerHealth}%`;
+  healthValue.textContent=`${playerHealth} / 100`;
+  staminaFill.style.width=`${playerStamina}%`;
+  staminaValue.textContent=`${Math.ceil(playerStamina)} / 100`;
   const capacity=storageCapacity();
   const counts = {
     lumberjack:npcs.filter(n=>n.userData.kind==='lumberjack').length,
@@ -2180,8 +2511,7 @@ function updateHUD() {
   };
   statsEl.innerHTML = `
     ${multiplayer.roomCode ? `<b>Online:</b> ${multiplayer.roomCode} · ${multiplayer.status}<br>` : ''}
-    <b>Enemies:</b> ${enemiesEnabled ? 'on' : 'off'}<br>
-    <b>Build:</b> ${selectedBuild ?? 'none'}<br>
+    <b>Build:</b> ${basePlaced ? selectedBuild ?? 'none' : 'Place base first'}<br>
     <span style="color:#bbb">E Buildings · Tab Stores</span>
   `;
   if (!inventoryEl.hidden) {
@@ -2259,8 +2589,7 @@ function drawMinimap() {
       ctx.stroke();
     }
   }
-  for (const unit of npcs) if (!unit.userData.insideHome) dot(unit.position,2.6,'#67dcff');
-  for (const enemy of raiders) if (enemy.userData.alive) dot(enemy.position,3,'#ed5959');
+  for (const unit of npcs) if (!unit.userData.insideHome) dot(unit.position,2.6,unit.userData.ownerId && unit.userData.ownerId!==multiplayer.playerId && unit.userData.ownerId!=='sandbox' ? '#ff7777' : '#67dcff');
 
   if (selectedObject) {
     const [x,y] = point(selectedObject.position);
@@ -2271,7 +2600,7 @@ function drawMinimap() {
     ctx.stroke();
   }
 
-  if (multiplayer.remote) dot(multiplayer.remote.position,3.2,'#f4d87a');
+  for (const peer of activePeers()) if (peer.remote) dot(peer.remote.position,3.2,'#f4d87a');
 
   const [px,py] = point(camera.position);
   const direction = new THREE.Vector3();
@@ -2297,12 +2626,6 @@ function drawMinimap() {
   ctx.stroke();
 }
 
-createBuilding('house',-2*GRID,-2*GRID);
-createBuilding('stockpile',-GRID,-2*GRID);
-createBuilding('granary',0,-2*GRID);
-addResource('wood',120);
-addResource('food',35);
-addResource('stone',30);
 drawMinimap();
 
 let minimapElapsed = 0;
@@ -2310,28 +2633,27 @@ function animate() {
   requestAnimationFrame(animate);
   const dt=Math.min(clock.getDelta(),.05);
   updatePlayer(dt);
-  const channel=multiplayer.channel;
-  if (channel?.readyState==='open' && performance.now()-multiplayer.lastPositionSent>=50) {
+  swordSwingTime=Math.max(0,swordSwingTime-dt);
+  royalHand.rotation.x=swordSwingTime>0 ? -Math.sin((.38-swordSwingTime)/.38*Math.PI)*1.1 : 0;
+  if (multiplayer.peers.size && performance.now()-multiplayer.lastPositionSent>=50) {
     multiplayer.lastPositionSent=performance.now();
     const direction=new THREE.Vector3();
     camera.getWorldDirection(direction);
-    channel.send(JSON.stringify({type:'position',name:multiplayer.name,x:camera.position.x,z:camera.position.z,yaw:Math.atan2(direction.x,direction.z)}));
+    sendGamePacket({type:'position',name:multiplayer.name,x:camera.position.x,z:camera.position.z,yaw:Math.atan2(direction.x,direction.z),health:playerHealth});
+  }
+  if (multiplayer.peers.size && performance.now()-multiplayer.lastUnitsSent>=100) {
+    multiplayer.lastUnitsSent=performance.now();
+    sendGamePacket({type:'units',units:npcs.filter(n=>n.userData.ownerId===multiplayer.playerId).map(n=>({id:n.userData.id,x:n.position.x,z:n.position.z,yaw:n.rotation.y,state:n.userData.state,attacking:n.userData.attacking}))});
   }
   updateGhost();
   updateNPCs(dt);
   updateWildlife(dt);
   updateNPCVisuals(dt);
+  for (const peer of activePeers()) if (peer.remote) peer.remote.userData.healthBar.quaternion.copy(peer.remote.quaternion).invert().multiply(camera.quaternion);
   deerSpawnTimer+=dt;
   if (deerSpawnTimer>=28 && uiMode!=='main') {
     deerSpawnTimer=0;
     if (deer.length<60) spawnHerd(true);
-  }
-  if (enemiesEnabled && uiMode !== 'main') {
-    enemySpawnTimer += dt;
-    if (enemySpawnTimer >= 12) {
-      enemySpawnTimer = 0;
-      if (raiders.filter(r => r.userData.alive).length < 7) makeRaider(randomPointInCircle(24,WORLD_RADIUS-6));
-    }
   }
   updateDetails();
   updateHUD();
@@ -2341,12 +2663,32 @@ function animate() {
     minimapElapsed = 0;
     drawMinimap();
   }
+  renderer.autoClear=true;
   renderer.render(scene,camera);
+  if (uiMode==='game' && basePlaced) {
+    renderer.autoClear=false;
+    renderer.clearDepth();
+    renderer.render(viewScene,viewCamera);
+    renderer.autoClear=true;
+  }
 }
 animate();
+
+const pendingGame=sessionStorage.getItem('rts-new-game');
+if (pendingGame) {
+  sessionStorage.removeItem('rts-new-game');
+  try {
+    const next=JSON.parse(pendingGame);
+    playerNameInput.value=next.name;
+    if (next.mode==='solo') beginSolo();
+    else if (['quick','create','join'].includes(next.mode)) beginMatch(next.mode,next.roomCode);
+  } catch { /* A stale restart request can be ignored. */ }
+}
 
 addEventListener('resize', () => {
   camera.aspect=innerWidth/innerHeight;
   camera.updateProjectionMatrix();
+  viewCamera.aspect=innerWidth/innerHeight;
+  viewCamera.updateProjectionMatrix();
   renderer.setSize(innerWidth,innerHeight);
 });

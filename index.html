@@ -10,6 +10,14 @@
     #hud { position:fixed; inset:0; pointer-events:none; }
     #stats, #details { position:absolute; padding:12px 14px; background:rgba(15,22,20,.85); border:1px solid rgba(255,255,255,.24); border-radius:9px; line-height:1.5; font-size:14px; }
     #stats { top:14px; left:14px; }
+    #vitals { position:absolute; left:50%; bottom:68px; transform:translateX(-50%); width:min(360px,calc(100vw - 36px)); padding:10px 13px; border:1px solid #b5a77d; border-radius:9px; background:rgba(18,25,23,.85); box-shadow:0 5px 20px #0007; }
+    .vitalLabel { display:flex; justify-content:space-between; margin:3px 0; font-size:12px; font-weight:bold; text-transform:uppercase; letter-spacing:.06em; }
+    .vitalTrack { height:12px; overflow:hidden; border-radius:5px; background:#2f3030; margin-bottom:7px; border:1px solid #555; }
+    .vitalFill { height:100%; width:100%; transition:width .12s linear; }
+    #healthFill { background:linear-gradient(90deg,#9d2928,#ef7152); }
+    #staminaFill { background:linear-gradient(90deg,#ae9540,#f0d46d); }
+    #basePrompt { position:absolute; top:19%; left:50%; transform:translateX(-50%); max-width:430px; padding:13px 17px; border:1px solid #efd477; border-radius:8px; background:rgba(21,29,24,.92); text-align:center; color:#f6e4a2; font-weight:bold; line-height:1.45; }
+    #basePrompt[hidden] { display:none; }
     #details { top:290px; right:14px; width:245px; pointer-events:none; }
     #details[hidden] { display:none; }
     #minimap { position:absolute; top:14px; right:14px; width:220px; padding:9px; background:rgba(15,22,20,.9); border:1px solid rgba(255,255,255,.3); border-radius:9px; box-shadow:0 4px 14px rgba(0,0,0,.3); }
@@ -53,7 +61,14 @@
     #playerName, #roomCode { box-sizing:border-box; width:100%; padding:11px 12px; border:1px solid #718176; border-radius:7px; background:#101713; color:white; font-size:15px; }
     .lobbyActions { display:grid; grid-template-columns:1fr 1fr; gap:9px; margin:12px 0; }
     .lobbyActions button { min-height:42px; }
+    #enterMatchBtn { width:100%; margin:2px 0 10px; background:#f0d588; font-weight:bold; }
+    #enterMatchBtn[hidden] { display:none; }
     #onlineStatus { min-height:20px; color:#bde6c2; text-align:center; }
+    #outcome { position:fixed; inset:0; z-index:8; display:grid; place-items:center; background:rgba(7,12,13,.82); text-align:center; }
+    #outcome[hidden] { display:none; }
+    #outcomeCard { padding:34px 48px; border:2px solid #d7b665; border-radius:16px; background:#17241f; box-shadow:0 20px 70px #000; }
+    #outcomeTitle { margin:0 0 8px; color:#f3d37c; font-size:clamp(32px,5vw,64px); }
+    #outcomePlace { font-size:24px; margin:0 0 22px; }
     .muted { color:#c4d0c7; font-size:13px; }
   </style>
 </head>
@@ -64,20 +79,28 @@
       <p>Build a settlement and command its troops.</p>
       <label for="playerName">Player name</label>
       <input id="playerName" maxlength="20" autocomplete="nickname" placeholder="Choose a player name">
-      <label class="option"><input id="enemySpawning" type="checkbox" checked> Enable enemy spawning</label>
       <div class="lobbyActions">
-        <button id="playBtn">Play solo</button>
+        <button id="playBtn">Sandbox</button>
         <button id="quickMatchBtn">Quick match</button>
         <button id="createRoomBtn">Create private match</button>
         <button id="joinRoomBtn">Join with code</button>
       </div>
+      <button id="enterMatchBtn" hidden>Enter match</button>
       <input id="roomCode" maxlength="8" autocomplete="off" placeholder="Room code">
-      <p id="onlineStatus" class="muted" aria-live="polite">Online matches need the signaling server running.</p>
-      <p class="muted">WASD move · Shift sprint · Space jump · Mouse look · E buildings · Tab stores · Click to place or inspect</p>
+      <p id="onlineStatus" class="muted" aria-live="polite">Online matches need the game server running with npm start.</p>
+      <p class="muted">First place your base · WASD move · Shift sprint · Space jump · Mouse look · E buildings · Tab stores</p>
     </div>
+  </div>
+  <div id="outcome" hidden>
+    <div id="outcomeCard"><h1 id="outcomeTitle"></h1><p id="outcomePlace"></p><button id="outcomeMenu">Back to menu</button></div>
   </div>
   <div id="hud">
     <div id="stats"></div>
+    <div id="vitals" aria-label="King health and stamina">
+      <div class="vitalLabel"><span>Health</span><span id="healthValue">100 / 100</span></div><div class="vitalTrack"><div class="vitalFill" id="healthFill"></div></div>
+      <div class="vitalLabel"><span>Stamina</span><span id="staminaValue">100 / 100</span></div><div class="vitalTrack"><div class="vitalFill" id="staminaFill"></div></div>
+    </div>
+    <div id="basePrompt" hidden>Choose your base location near your starting border.<br>Turn toward clear ground and left click to place it. Stores are added beside it.</div>
     <div id="inventory" hidden aria-label="Settlement inventory">
       <h2>Stores</h2>
       <div id="inventoryContents"></div>

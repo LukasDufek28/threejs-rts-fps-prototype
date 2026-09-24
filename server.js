@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { attachMatchmaking } from './matchmaking-core.js';
 
-const root = fileURLToPath(new URL('.', import.meta.url));
+const root = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const port = Number(process.env.PORT || 8000);
 const mimeTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -13,7 +13,9 @@ const mimeTypes = {
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.png': 'image/png',
-  '.svg': 'image/svg+xml'
+  '.svg': 'image/svg+xml',
+  '.ogg': 'audio/ogg',
+  '.wav': 'audio/wav'
 };
 
 const server = createServer(async (request, response) => {
